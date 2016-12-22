@@ -76,7 +76,7 @@ def CheckRateLimit():
 
 	r = api.request('application/rate_limit_status').json()
 
-	for res_family in r.get_iterator():
+	for res_family in r['resources']:
 		for res in r['resources'][res_family]:
 			limit = r['resources'][res_family][res]['limit']
 			remaining = r['resources'][res_family][res]['remaining']
