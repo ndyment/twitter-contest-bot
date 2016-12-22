@@ -6,8 +6,10 @@ import os.path
 import sys
 
 # Load our configuration from the JSON file.
-with open('config.json') as data_file:    
+with open('config.json') as data_file:
 	data = json.load(data_file)
+
+print(data)
 
 # These vars are loaded in from config.
 consumer_key = data["consumer-key"]
@@ -23,9 +25,16 @@ min_ratelimit_search = data["min-ratelimit-search"]
 search_queries = data["search-queries"]
 follow_keywords = data["follow-keywords"]
 fav_keywords = data["fav-keywords"]
+safewords = data["safewords"]
+blacklisted_words = data["blacklisted-words"]
 
 # Don't edit these unless you know what you're doing.
 api = TwitterAPI(consumer_key, consumer_secret, access_token_key, access_token_secret)
+
+#let's test and say something
+r = api.request('statuses/update', {'status':'I want to win something'})
+print r.status_code
+
 post_list = list()
 ignore_list = list()
 ratelimit=[999,999,100]
@@ -64,10 +73,10 @@ def CheckRateLimit():
 	if ratelimit[2] < min_ratelimit:
 		print("Ratelimit too low -> Cooldown (" + str(ratelimit[2]) + "%)")
 		time.sleep(30)
-	
+
 	r = api.request('application/rate_limit_status').json()
 
-	for res_family in r['resources']:
+	for res_family in r.get_iterator():
 		for res in r['resources'][res_family]:
 			limit = r['resources'][res_family][res]['limit']
 			remaining = r['resources'][res_family][res]['remaining']
@@ -81,10 +90,10 @@ def CheckRateLimit():
 
 			#print(res_family + " -> " + res + ": " + str(percent))
 			if percent < 5.0:
-				LogAndPrint(res_family + " -> " + res + ": " + str(percent) + "  !!! <5% Emergency exit !!!")				
+				LogAndPrint(res_family + " -> " + res + ": " + str(percent) + "  !!! <5% Emergency exit !!!")
 				sys.exit(res_family + " -> " + res + ": " + str(percent) + "  !!! <5% Emergency exit !!!")
 			elif percent < 30.0:
-				LogAndPrint(res_family + " -> " + res + ": " + str(percent) + "  !!! <30% alert !!!")				
+				LogAndPrint(res_family + " -> " + res + ": " + str(percent) + "  !!! <30% alert !!!")
 			elif percent < 70.0:
 				print(res_family + " -> " + res + ": " + str(percent))
 
@@ -112,9 +121,9 @@ def UpdateQueue():
 			r = api.request('statuses/retweet/:' + str(post['id']))
 			CheckError(r)
 			post_list.pop(0)
-		
+
 		else:
-	
+
 			print("Ratelimit at " + str(ratelimit[2]) + "% -> pausing retweets")
 
 
@@ -156,30 +165,33 @@ def ScanForContests():
 	t = threading.Timer(scan_update_time, ScanForContests)
 	t.daemon = True;
 	t.start()
-	
+
 	global ratelimit_search
-	
+
 	if not ratelimit_search[2] < min_ratelimit_search:
-	
+
 		print("=== SCANNING FOR NEW CONTESTS ===")
 
 
 		for search_query in search_queries:
 
 			print("Getting new results for: " + search_query)
-		
+
 			try:
 				r = api.request('search/tweets', {'q':search_query, 'result_type':"mixed", 'count':100})
+				print r.status_code
 				CheckError(r)
 				c=0
-					
-				for item in r:
-					
+
+				for item in r.get_iterator():
+
 					c=c+1
 					user_item = item['user']
 					screen_name = user_item['screen_name']
 					text = item['text']
+					print ("Tweet content is: " + text)
 					text = text.replace("\n","")
+					text = text.lower()
 					id = str(item['id'])
 					original_id=id
 					is_retweet = 0
@@ -191,48 +203,60 @@ def ScanForContests():
 						original_id = str(original_item['id'])
 						original_user_item = original_item['user']
 						original_screen_name = original_user_item['screen_name']
+						txt = text.split(':')
+						txt.pop(0)
+						original_tweet_text = ':'.join(txt)
+						print ("This is a retweet from: " + original_screen_name)
+
+					else:
+						original_item = item
+						original_id = str(original_item['id'])
+						original_user_item = original_item['user']
+						original_screen_name = original_user_item['screen_name']
+						original_tweet_text = text
+						print ("Original by: " + original_screen_name)
 
 					if not original_id in ignore_list:
 
 						if not original_screen_name in ignore_list:
-				
+
 							if not screen_name in ignore_list:
-	
-								if item['retweet_count'] > 0:
 
-									post_list.append(item)
-									f_ign = open('ignorelist', 'a')
+								#if item['retweet_count'] > 0:
+									#add code to check "resident of" or other words I want to ban before appending to post_list
+								if any(word in original_tweet_text for word in safewords):
+									if not any(word in original_tweet_text for word in blacklisted_words):
+										post_list.append(item)
+										f_ign = open('ignorelist', 'a')
+										#TODO: Add some do not ignore words here, but will it act on same tweets after restart?
+										if is_retweet:
+											print(id + " - " + screen_name + " retweeting " + original_id + " - " + original_screen_name + ": " + text)
+											ignore_list.append(original_id)
+											f_ign.write(original_id + "\n")
+										else:
+											print(id + " - " + screen_name + ": " + text)
+											ignore_list.append(id)
+											f_ign.write(id + "\n")
 
-									if is_retweet:
-										print(id + " - " + screen_name + " retweeting " + original_id + " - " + original_screen_name + ": " + text)
-										ignore_list.append(original_id)
-										f_ign.write(original_id + "\n")
+										f_ign.close()
 									else:
-										print(id + " - " + screen_name + ": " + text)
-										ignore_list.append(id)
-										f_ign.write(id + "\n")
-
-									f_ign.close()
+										print("BLACKLISTED WORD FOUND in: " + original_tweet_text)
+								else:
+									print("NO SAFEWORDS FOUND: " + original_tweet_text)
 
 						else:
-			
+
 							if is_retweet:
 								print(id + " ignored: " + original_screen_name + " on ignore list")
 							else:
 								print(original_screen_name + " in ignore list")
 
-					else:
-	
-						if is_retweet:
-							print(id + " ignored: " + original_id + " on ignore list")
-						else:
-							print(id + " in ignore list")
-				
+
 				print("Got " + str(c) + " results")
 
 			except Exception as e:
 				print("Could not connect to TwitterAPI - are your credentials correct?")
-				print("Exception: " + e)
+				print("Exception: ", e)
 
 	else:
 
